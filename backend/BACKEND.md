@@ -30,7 +30,7 @@ backend/
 ├── data/
 │   └── stocks.json        ← 5421 stocks extracted from All_MainBoard_SME_Stocks.xlsx
 ├── db/
-│   └── database.js        ← SQLite connection + table creation + indexes
+│   └── database.js        ← SQLite connection + table creation + migrations + indexes
 ├── middleware/
 │   └── auth.js            ← JWT verification middleware
 ├── routes/
@@ -61,8 +61,9 @@ npm start       # production
 1. `server.js` loads
 2. `db/database.js` connects to (or creates) `mib.db`
 3. Tables are created if they don't exist (idempotent)
-4. Server listens on `0.0.0.0:7777`
-5. Console prints both `localhost` and network IP
+4. Migration blocks add any new columns to existing databases
+5. Server listens on `0.0.0.0:7777`
+6. Console prints both `localhost` and network IP
 
 ---
 
@@ -79,42 +80,48 @@ npm start       # production
 **Response:**    `{ token, username }`
 
 ### Entries
-| Method | Path               | Auth? | Description                          |
-|--------|--------------------|-------|--------------------------------------|
-| POST   | /api/entries       | Yes   | Submit a new entry                   |
-| GET    | /api/entries       | No    | Get all entries (paginated + search) |
-| GET    | /api/entries/:id   | No    | Get single entry                     |
-| DELETE | /api/entries/:id   | Yes   | Delete own entry only                |
+| Method | Path               | Auth? | Description                                      |
+|--------|--------------------|-------|--------------------------------------------------|
+| POST   | /api/entries       | Yes   | Submit a new entry                               |
+| GET    | /api/entries       | No    | Get all entries (paginated + search/filter)      |
+| GET    | /api/entries/:id   | No    | Get single entry                                 |
+| PUT    | /api/entries/:id   | Yes   | Edit entry (admins or the entry's own uploader)  |
+| DELETE | /api/entries/:id   | Yes   | Delete entry (admins or the entry's own uploader)|
 
 **POST body:**
 ```json
 {
-  "entry_date":   "2026-04-04",
-  "stock_name":   "Reliance Industries Ltd.",
-  "stock_symbol": "RELIANCE",
-  "sector":       "Crude Oil",
-  "type":         "Published news",
-  "source":       "Economic Times",
-  "news":         "...",
-  "opinion":      "..." 
+  "entry_date":    "2026-04-04",
+  "stock_name":    "Reliance Industries Ltd.",
+  "stock_symbol":  "RELIANCE",
+  "sector":        "Crude Oil",
+  "type":          "Published news",
+  "source":        "Economic Times",
+  "news":          "...",
+  "rating":        "A",
+  "opinion":       "...",
+  "investor_name": "..."
 }
 ```
+`rating`, `opinion`, and `investor_name` are optional. `rating` is admin-only (ignored silently for non-admins on PUT).
 
 **GET query params (all optional):**
-- `q`         — keyword search across news, opinion, source, stock name/symbol
-- `stock`     — filter by symbol or name
-- `sector`    — filter by sector
-- `type`      — filter by type
+- `q`         — keyword search across news, opinion, source, stock name/symbol, username
+- `stock`     — filter by symbol or name (partial match)
+- `sector`    — filter by sector (exact match)
+- `type`      — filter by type (exact match)
+- `source`    — filter by source (exact match)
+- `rating`    — filter by rating (A / B / C / D)
 - `date_from` — filter entry_date >= (YYYY-MM-DD)
 - `date_to`   — filter entry_date <= (YYYY-MM-DD)
 - `page`      — page number (default: 1)
 - `limit`     — results per page (default: 20)
 
 ### Stocks
-| Method | Path                 | Auth? | Description                     |
-|--------|----------------------|-------|---------------------------------|
+| Method | Path                 | Auth? | Description                      |
+|--------|----------------------|-------|----------------------------------|
 | GET    | /api/stocks          | No    | All stocks (optionally ?sector=) |
-| GET    | /api/stocks/sectors  | No    | Array of all unique sectors     |
+| GET    | /api/stocks/sectors  | No    | Array of all unique sectors      |
 
 ---
 
@@ -123,6 +130,16 @@ npm start       # production
 2. Login → password compared → JWT issued (7 days, secret in `middleware/auth.js`)
 3. Protected routes require `Authorization: Bearer <token>` header
 4. `req.user` = `{ id, username }` after middleware runs
+
+---
+
+## Admin Access
+Two users have elevated privileges (hardcoded in `routes/entries.js`):
+```js
+const ADMINS = ['Aaryan', 'raunak bajaj'];
+```
+Admins can: edit any entry (including the `rating` field), delete any entry.  
+Non-admin users can: edit and delete only their own entries, but cannot change `rating`.
 
 ---
 
@@ -135,6 +152,9 @@ npm start       # production
 - Corporate actions
 - Promoter transactions
 - Bulk / Block deals
+
+## Valid Rating Values
+`A`, `B`, `C`, `D` — optional field, settable only by admins.
 
 ---
 
@@ -157,7 +177,8 @@ Source: `All_MainBoard_SME_Stocks.xlsx` (provided by user)
 
 ## Key Design Decisions
 - **SQLite over PostgreSQL/MySQL**: No server setup, perfect for ≤50 users, file-based backup.
-- **better-sqlite3 over sqlite3**: Synchronous API = simpler code, better performance for small concurrency.
+- **@libsql/client over better-sqlite3**: Avoids C++ build tools requirement on Windows. All DB calls are async.
 - **Stocks in JSON not DB**: 5421 rows are read-only reference data; JSON file is faster and simpler.
 - **Dates stored as TEXT** in ISO format (`YYYY-MM-DD` / `YYYY-MM-DD HH:MM:SS`) — SQLite supports date functions on TEXT.
 - **Two timestamps per entry**: `entry_date` (user-chosen) vs `submitted_at` (auto server time) — critical distinction.
+- **`edited_at` column**: Set on every PUT, never on POST. Lets the UI show when an entry was last modified.
